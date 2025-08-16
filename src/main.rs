@@ -17,7 +17,7 @@ Original notice:
    no. 3(321), 197--198. 
 */
 
-const MAX_X: usize = 12; // can be set to 15
+const MAX_X: usize = 13; // can be set to 15
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Arc {
@@ -52,7 +52,7 @@ impl fmt::Display for Curve {
 	}
 }
 
-type Numeration = [usize; 2*MAX_X + 2];
+type Numeration = [u8; 2*MAX_X + 2];
 type Free = [bool; 2*MAX_X + 2];
 
 impl Curve {
@@ -148,7 +148,7 @@ impl Curve {
 		}
 	}
 	
-	fn kill_arc(&mut self, ind: &Numeration) -> (usize, bool) {
+	fn kill_arc(&mut self, ind: &Numeration) -> (u8, bool) {
 		let h = self.clone();
 		if ind[self.arcs[2*self.nx].w]%2 == 1 {
 			self.nx -= 1;
@@ -305,31 +305,7 @@ impl Curve {
 		}
 		true
 	}
-/* In Pascal:
-function nonint(c: curve): boolean;
-var
-  ifrom, ito, j, jto: longint;
-  intersection: boolean;
-begin
-  intersection := false;
-  for ifrom := 1 to 2*c.NumCross do
-  begin
-    ito := c.arcs[ifrom].where;
-    if ito-1 < ifrom+1 then continue;
-    for j := ifrom+1 to ito-1 do
-    begin
-      jto := c.arcs[j].where;
-      if (jto < ifrom) or (jto > ito) then
-      begin
-        intersection := true;
-        break;
-      end;
-    end;
-    if intersection then break;
-  end;
-  nonint := not intersection;
-end;
-*/
+
 	fn index(&self) -> i32 {
 		let mut ind = 0;
 		let mut i = 1;
@@ -350,12 +326,6 @@ end;
 #[derive(Debug, PartialEq, Eq)]
 struct DataCounts { c: [[usize; 4*MAX_X+1]; MAX_X+1]}
 
-impl From<[[usize; 4*MAX_X+1]; MAX_X+1]> for DataCounts {
-	fn from(c: [[usize; 4*MAX_X+1]; MAX_X+1]) -> Self {
-		Self { c }
-	}
-}
-
 impl DataCounts {
 	fn check_data(&self, max: usize) {
 		for i in 0..=max {
@@ -368,6 +338,12 @@ impl DataCounts {
 	fn count_totals(&self, max: usize, divide: bool) -> Vec<usize> {
 		self.check_data(max);
 		(0..=max).map(|i| (1..=(4*max)).map(|j| self.c[i][j] / if divide {j} else {1}).sum()).collect()
+	}
+	
+	fn new(x: usize) -> Self {
+		let mut c = [[0; _]; _];
+		c[0][1] = x;
+		Self { c }
 	}
 }
 
@@ -383,16 +359,12 @@ struct Counts {
 impl Counts {
 	fn new() -> Self {
 		let mut s = Self {
-			pc: [[0; 4*MAX_X+1]; MAX_X+1].into(),
-			pn: [[0; 4*MAX_X+1]; MAX_X+1].into(),
-			nc: [[0; 4*MAX_X+1]; MAX_X+1].into(),
-			nn: [[0; 4*MAX_X+1]; MAX_X+1].into(),
-			by_index: [[[0; MAX_X+2]; 4*MAX_X+1]; MAX_X+1],
+			pc: DataCounts::new(2),
+			pn: DataCounts::new(1),
+			nc: DataCounts::new(1),
+			nn: DataCounts::new(1),
+			by_index: [[[0; _]; _]; _],
 		};
-		s.pc.c[0][1] = 2;
-		s.pn.c[0][1] = 1;
-		s.nc.c[0][1] = 1;
-		s.nn.c[0][1] = 1;
 		s.by_index[0][1][1] = 1;
 		s
 	}
@@ -447,20 +419,22 @@ struct Data {
 	down_connect: [Free; MAX_X+1],
 	counts: Counts,
 	counts_nonintersecting: Counts,
+	noncrossing_only: bool,
 	current: usize,
 }
 
 impl Data {
-	fn new(max: usize) -> Self {
+	fn new(max: usize, noncrossing_only: bool) -> Self {
 		assert!(max > 0 && max <= MAX_X);
 		let mut d = Self {
 			max,
 			curves: core::array::from_fn(|_| Curve::default()),
-			indices: [[0; 2*MAX_X + 2]; MAX_X+1],
-			up_connect: [[false; 2*MAX_X + 2]; MAX_X+1],
-			down_connect: [[false; 2*MAX_X + 2]; MAX_X+1],
+			indices: [[0; _]; _],
+			up_connect: [[false; _]; _],
+			down_connect: [[false; _]; _],
 			counts: Counts::new(),
 			counts_nonintersecting: Counts::new(),
+			noncrossing_only,
 			current: 0,
 		};
 		d.curves[0].put_indices(&mut d.indices[0]);
@@ -477,34 +451,37 @@ impl Data {
 		let (c1, c2) = self.curves.split_at_mut(self.current);
 		let cc = &mut c2[0];
 		cc.make_arc(&c1[self.current-1], segment, side);
-		cc.put_indices(&mut self.indices[self.current]);
-		let mut h = cc.clone();
-		let mut ind = self.indices[self.current];
-		let mut symm = h.clone();
-		symm.overturn_curve();
-		let mut symind: Numeration = [0; 2*MAX_X + 2];
-		symm.put_indices(&mut symind);
-		symm.normalize_curve(&mut symind);
-		let mut i = 0;
-		let (mut coef, mut coefs) = (2, 2);
-		while i == 0 || h != *cc {
-			h.remake_curve(&ind);
-			h.put_indices(&mut ind);
-			h.normalize_curve(&mut ind);
-			if coef == 2 && h == symm {
-				coef = 1;
-				if h.dir_r != symm.dir_r {
-					coefs = 1;
+		let nonint = cc.nonint();
+		if nonint || !self.noncrossing_only {
+			cc.put_indices(&mut self.indices[self.current]);
+			let mut h = cc.clone();
+			let mut ind = self.indices[self.current];
+			let mut symm = h.clone();
+			symm.overturn_curve();
+			let mut symind: Numeration = [0; _];
+			symm.put_indices(&mut symind);
+			symm.normalize_curve(&mut symind);
+			let mut i = 0;
+			let (mut coef, mut coefs) = (2, 2);
+			while i == 0 || h != *cc {
+				h.remake_curve(&ind);
+				h.put_indices(&mut ind);
+				h.normalize_curve(&mut ind);
+				if coef == 2 && h == symm {
+					coef = 1;
+					if h.dir_r != symm.dir_r {
+						coefs = 1;
+					}
 				}
+				i += 1;
 			}
-			i += 1;
+			let flag = h.dir_r == cc.dir_r;
+			let index = cc.index();
+			if nonint {
+				self.counts_nonintersecting.inc(self.current, i, flag, coef, coefs, index.abs() as usize);
+			}
+			self.counts.inc(self.current, i, flag, coef, coefs, index.abs() as usize);
 		}
-		let flag = h.dir_r == cc.dir_r;
-		let index = cc.index();
-		if h.nonint() {
-			self.counts_nonintersecting.inc(self.current, i, flag, coef, coefs, index.abs() as usize);
-		}
-		self.counts.inc(self.current, i, flag, coef, coefs, index.abs() as usize);
 		cc.look_for_free_segments(&mut self.up_connect[self.current], true);
 		cc.look_for_free_segments(&mut self.down_connect[self.current], false);
 	}
@@ -547,16 +524,20 @@ impl Data {
 	}
 	
 	fn print(&self) {
-		println!("== With intersections in the Gauss diagram ==");
-		self.counts.print(self.max);
+		if !self.noncrossing_only {
+			println!("== With intersections in the Gauss diagram ==");
+			self.counts.print(self.max);
+		}
 		println!("== Without intersections in the Gauss diagram ==");
 		self.counts_nonintersecting.print(self.max);
 	}
 }
 
 fn main() {
-	let max = std::env::args().skip(1).next().map_or(6, |a| a.parse::<usize>().expect("Command line argument must be an integer"));
-	let mut d = Data::new(max);
+	use std::env::args;
+	let max = args().skip(1).next().map_or(6, |a| a.parse::<usize>().expect("Command line argument must be an integer"));
+	let noncrossing_only = args().skip(2).next().is_some_and(|s| s == "x");
+	let mut d = Data::new(max, noncrossing_only);
 	d.count();
     d.print();
 }
@@ -567,7 +548,7 @@ mod tests {
 	
 	#[test]
 	fn test() {
-		let mut d = Data::new(6);
+		let mut d = Data::new(6, false);
 		d.count();
 		let Counts { pc, pn, nc, nn, .. } = d.counts;
 		assert_eq!(&pc.count_totals(d.max, true), &[2, 3, 10, 39, 204, 1262, 8984], "A008980");
